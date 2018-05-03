@@ -1,0 +1,265 @@
+---
+title: "Replication Package for An Experience Report on Defect Modelling in Practice: Challenges and Pitfalls"
+author: "Chakkrit Tantithamthavorn and Ahmed E. Hassan"
+output:
+  html_document:
+    fig_caption: yes
+    number_sections: no
+    toc: yes
+    toc_depth: 2
+  pdf_document:
+    fig_caption: yes
+    number_sections: no
+---
+
+```{r functions, include=FALSE}
+# A function for captioning and referencing images
+fig <- local({
+    i <- 0
+    ref <- list()
+    list(
+        cap=function(refName, text) {
+            i <<- i + 1
+            ref[[refName]] <<- i
+            paste("Figure ", i, ": ", text, sep="")
+        },
+        ref=function(refName) {
+            ref[[refName]]
+        })
+})
+```
+
+***
+
+**Abstract.** Over the past decade with the rise of the Mining Software Repositories (MSR) field, the modelling of defects for large and long-lived systems has become one of the most applications of MSR. The findings and approaches of such studies have even attracted the attention of many of our industrial collaborators (and other practitioners worldwide). At the core of many of these studies is the development and use of analytical models for defects. In this paper, we discuss common misconceptions and pitfalls that we observed as practitioners attempt to adopt such models or reason about the findings of such studies. The key goal of this paper is to document such misconceptions and pitfalls so practitioners can avoid them in future efforts. We also hope that other academics will be mindful of such misconceptions and pitfalls in their own work and industrial engagements. 
+
+**Reproducibility.** We provide an access to our experimental data and scripts, which is generated from R markdown using `knitr` R package. This means that all the results from our paper can be reproduced with the code and data available online. This R markdown file can be downloaded at http://chakkrit.com/replication/pitfalls/pitfalls.Rmd
+
+**Reference** Chakkrit Tantithamthavorn and Ahmed E. Hassan, "An Experience Report on Defect Modelling in Practice: Pitfalls and Challenges", In Proceedings of 40th International Conference on Software Engineering: Software Engineering in Practice Track (ICSE-SEIP'18), 10 pages.
+
+***
+
+# Install and load the Rnalytica R package
+```{r, message=F, warning=F}
+devtools::install_github('software-analytics/Rnalytica')
+library(Rnalytica)
+library(gridExtra)
+```
+
+# Load a running-example defect dataset (Eclipse 2.0)
+```{r, message=F, warning=F}
+eclipse <- loadDefectDataset("eclipse-2.0")
+data <- eclipse$data
+indep <- eclipse$indep
+dep <- eclipse$dep
+```
+
+# Pitfall 1--Testing hypotheses without including control metrics (Table 2)
+
+```{r, message=F, warning=F}
+m1 <- fit(data, dep, c("CC_max","PAR_max","FOUT_max"), classifier="lr", validation="boot")
+m2 <- fit(data, dep, c("TLOC","CC_max","PAR_max","FOUT_max"), classifier="lr", validation="boot")
+
+c(mean(m1$performance$AUC),mean(m2$performance$AUC))
+
+importance <- data.frame(m1=c(0,anova(m1$full.model)$Deviance[-1]), m2=anova(m2$full.model)$Deviance[-1])
+importance <- data.frame(apply(importance, 2, function(x){x/sum(abs(x))}))
+rownames(importance) <- c("TLOC","CC_max","PAR_max","FOUT_max")
+round(importance,digit=2)*100
+```
+
+# Pitfall 2--Failure to deal with correlated metrics when interpreting models (Figure 3, Table 3)
+
+```{r, message=F, warning=F}
+plot(varclus(as.matrix(data[,indep]), similarity="spear", trans="abs"))
+abline(h=0.3, col="red")
+
+m1 <- fit(data, dep, c("CC_max","CC_avg","PAR_max","FOUT_max"), classifier="lr", validation="boot")
+m2 <- fit(data, dep, c("CC_avg","CC_max","PAR_max","FOUT_max"), classifier="lr", validation="boot")
+
+c(mean(m1$performance$AUC),mean(m2$performance$AUC))
+
+importance <- data.frame(m1=anova(m1$full.model)$Deviance[c(3,2,4,5)], m2=anova(m2$full.model)$Deviance[-1])
+importance <- data.frame(apply(importance, 2, function(x){x/sum(abs(x))}))
+rownames(importance) <- c("CC_avg","CC_max","PAR_max","FOUT_max")
+round(importance,digit=2)*100
+```
+
+
+# Pitfall 3--Class rebalancing techniques improve model performance (Figures 4a and 4b)
+
+```{r, message=F, warning=F}
+var <- c("TLOC","PAR_max",'NOI',"NOF_max","FOUT_max","NSM_max","NSF_max","ACD","NOM_max")
+original.m <- fit(data, dep, var)
+
+# Check multi-collinearity
+vif(original.m$full.model)
+
+down.m <- fit(data, dep, var, classifier="lr", rebalance="down", validation="boot")
+up.m <- fit(data, dep, var, classifier="lr", rebalance="up", validation="boot")
+
+auc <- data.frame(Original=original.m$performance$AUC, 
+                  UnderSampling=down.m$performance$AUC,
+                  OverSampling=up.m$performance$AUC)
+g1 <- ggplot(melt(auc), aes(x=variable, y=value)) + geom_boxplot() + theme_bw() + ylab("AUC Performance") + xlab("") + scale_y_continuous(breaks=12:20*0.05, limits = c(0.6,0.9)) + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+fmeasure <- data.frame(Original=original.m$performance$Fmeasure, 
+                       UnderSampling=down.m$performance$Fmeasure,
+                       OverSampling=up.m$performance$Fmeasure)
+g2 <- ggplot(melt(fmeasure), aes(x=variable, y=value)) + geom_boxplot() + theme_bw() + ylab("F-Measure Performance") + xlab("") + scale_y_continuous(breaks=4:10*0.05, limits = c(0.2,0.5)) + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+grid.arrange(g1,g2, ncol=2)
+
+x <- original.m$importance
+v <- melt(x)
+v$rank <- sk_esd(x)$groups[as.character(v$variable)]
+g1 <- ggplot(v, aes(x=variable, y=value)) + geom_boxplot() + facet_grid(. ~ rank, drop=TRUE, scales="free_x", space="free_x") + ylab("Importance Scores") + xlab("Original") + theme(axis.text.x = element_text(angle = 45, hjust = 1),plot.title = element_text(hjust = 0.5)) + ggtitle("Rank")
+
+x <- down.m$importance
+v <- melt(x)
+v$rank <- sk_esd(x)$groups[as.character(v$variable)]
+g2 <- ggplot(v, aes(x=variable, y=value)) + geom_boxplot() + facet_grid(. ~ rank, drop=TRUE, scales="free_x", space="free_x") + ylab("Importance Scores") + xlab("Under-sampling") + theme(axis.text.x = element_text(angle = 45, hjust = 1),plot.title = element_text(hjust = 0.5)) + ggtitle("Rank")
+
+x <- up.m$importance
+v <- melt(x)
+v$rank <- sk_esd(x)$groups[as.character(v$variable)]
+g3 <- ggplot(v, aes(x=variable, y=value)) + geom_boxplot() + facet_grid(. ~ rank, drop=TRUE, scales="free_x", space="free_x") + ylab("Importance Scores") + xlab("Over-sampling") + theme(axis.text.x = element_text(angle = 45, hjust = 1),plot.title = element_text(hjust = 0.5)) + ggtitle("Rank")
+
+grid.arrange(g1,g2,g3, ncol=3)
+```
+
+# Pitfall 4--Not experimenting with different learners and using default parameter values for learners (Figure 5)
+
+```{r, message=F, warning=F}
+indep <- c("FOUT_max",'NOI',"NOF_max","PAR_max","TLOC")
+lr <- fit(data, dep, indep, classifier="lr")
+rf <- fit(data, dep, indep, classifier="rf")
+
+C50default50 <- fit(data, dep, indep, classifier="c5.0", classifier.params = list(c5.0.trials = 1, c5.0.rules = TRUE))
+C50optimize50 <- fit(data, dep, indep, classifier="c5.0", classifier.params = list(c5.0.trials = 40, c5.0.rules = TRUE))
+
+auc50 <- data.frame("Optimized C5.0" = C50optimize50$performance$AUC, Logistic=lr$performance$AUC, RandomForest = rf$performance$AUC, "Default C5.0"=C50default50$performance$AUC)
+
+ggplot(melt(auc50), aes(x=reorder(variable, -value, FUN=median), y=value)) + geom_boxplot() + theme_bw() + ylab("AUC Performance") + xlab("") + scale_y_continuous(breaks=10:20*0.05, limits = c(0.625,0.825))
+```
+
+# Pitfall 5--Using threshold-dependent performance measures (e.g, F-measure) to measure the performance of a model (Figure 6)
+
+```{r, eval=FALSE, echo=T}
+C50default20 <- fit(data, dep, indep, classifier="c5.0", classifier.params = list(c5.0.trials = 1, c5.0.rules = TRUE), prob.threshold = 0.20)
+C50optimize20 <- fit(data, dep, indep, classifier="c5.0", classifier.params = list(c5.0.trials = 40, c5.0.rules = TRUE), prob.threshold = 0.20)
+lr20 <- fit(data, dep, indep, classifier="lr", prob.threshold=0.2)
+rf20 <- fit(data, dep, indep, classifier="rf", prob.threshold=0.2)
+
+C50default80 <- fit(data, dep, indep, classifier="c5.0", classifier.params = list(c5.0.trials = 1, c5.0.rules = TRUE), prob.threshold = 0.80)
+C50optimize80 <- fit(data, dep, indep, classifier="c5.0", classifier.params = list(c5.0.trials = 40, c5.0.rules = TRUE), prob.threshold = 0.80)
+lr80 <- fit(data, dep, indep, classifier="lr", prob.threshold=0.8)
+rf80 <- fit(data, dep, indep, classifier="rf", prob.threshold=0.8)
+
+f50 <- data.frame("Optimized C5.0" = C50optimize50$performance$Fmeasure, Logistic=lr$performance$Fmeasure, RandomForest = rf$performance$Fmeasure, "Default C5.0"=C50default50$performance$Fmeasure)
+
+f20 <- data.frame("Optimized C5.0" = C50optimize20$performance$Fmeasure, Logistic=lr20$performance$Fmeasure, RandomForest = rf20$performance$Fmeasure,  "Default C5.0"=C50default20$performance$Fmeasure)
+
+f80 <- data.frame("Optimized C5.0" = C50optimize80$performance$Fmeasure, Logistic=lr80$performance$Fmeasure, RandomForest = rf80$performance$Fmeasure,  "Default C5.0"=C50default80$performance$Fmeasure)
+
+saveRDS(list(auc50=auc50, f50=f50, f20=f20, f80=f80), "parameter-settings.rds")
+```
+
+## Plot
+
+```{r, message=F, warning=F}
+results <- readRDS("parameter-settings.rds")
+f20 <- results$f20
+f50 <- results$f50
+f80 <- results$f80
+
+g1 <- ggplot(melt(f20), aes(x=variable, y=value)) + geom_boxplot() + theme_bw() + ylab("F-Measure") + xlab("Threshold=0.20") + scale_y_continuous(breaks=6:10*0.05, limits = c(0.3,0.5)) + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+g2 <- ggplot(melt(f50), aes(x=variable, y=value)) + geom_boxplot() + theme_bw() + ylab("F-Measure") + xlab("Threshold=0.50") + scale_y_continuous(breaks=4:10*0.05, limits = c(0.2,0.5)) + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+g3 <- ggplot(melt(f80), aes(x=variable, y=value)) + geom_boxplot() + theme_bw() + ylab("F-Measure") + xlab("Threshold=0.80") + scale_y_continuous(breaks=0:8*0.05, limits = c(0,0.4)) + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+grid.arrange(g1,g2,g3, ncol=3)
+```
+
+# Pitfall 6--Using 10-folds cross-validation for model validation (Figure 7)
+
+```{r, message=F, warning=F}
+indep <- c("FOUT_max",'NOI',"NOF_max","PAR_max","TLOC")
+ratio <- as.numeric(table(data$post)["TRUE"]/nrow(data)) # Compute Defective Ratio
+
+# indexed sampledata
+all.events <- rownames(data[data$post==TRUE,]) # Pool of defective modules
+non.events <- rownames(data[data$post==FALSE,]) # Pool of clean modules
+
+# split data
+events <- length(indep)*3
+set.seed(12345)
+indices <- as.numeric(c(sample(all.events, events), sample(non.events, round(events/ratio))))
+sampledata <- data[indices,]
+validatedata <- data[-unique(indices),]
+
+# Unseen Performance
+f <- as.formula(paste0(dep, " ~ ", paste0(indep,collapse = "+")))
+m <- glm(f, data=sampledata, family="binomial")
+prob <- predict(m, validatedata, type="response")
+unseen <- as.numeric(auc(validatedata[,dep],prob))
+
+set.seed(123456)
+bootstrap25 <- fit(sampledata, dep, indep, validation = "boot", validation.params = list(boot.n = 25))
+set.seed(123456)
+bootstrap100 <- fit(sampledata, dep, indep, validation = "boot", validation.params = list(boot.n = 100))
+set.seed(123456)
+cv10 <- fit(sampledata, dep, indep, validation = "cv", validation.params = list(cv.k = 10))
+set.seed(123456)
+cv1010 <- fit(sampledata, dep, indep, validation = "cv", validation.params = list(cv.k = 10), repeats = 10)
+
+results <- data.frame(Unseen=unseen, Out.of.sample.25=bootstrap25$performance$AUC, Out.of.sample.100=bootstrap100$performance$AUC, CV.10=cv10$performance$AUC, CV.10X10=cv1010$performance$AUC)
+ggplot(melt(results), aes(x=factor(variable, labels=c("Unseen","25 Out-of-sample","100 Out-of-sample","10-folds CV","10x10-folds CV")), y=value)) + geom_boxplot() + theme_bw() + ylab("AUC Performance") + xlab("") + scale_y_continuous(breaks=4:10*0.1) + geom_hline(yintercept=unseen, color="red", linetype="dashed") +  stat_summary(fun.y=mean, colour="darkred", geom="point", shape=18, size=3) + coord_cartesian(ylim=c(0.5,1.0)) + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+c(unseen, mean(bootstrap25$performance$AUC), mean(bootstrap100$performance$AUC), mean(cv10$performance$AUC),mean(cv1010$performance$AUC))
+```
+
+# Pitfall 7--Using ANOVA Type-I when interpreting a model (Table 5)
+
+```{r, message=F, warning=F}
+
+indep1 <- c("TLOC","NSF_max","NSM_max","NOF_max","ACD","NOM_max","FOUT_max","PAR_max",'NOI')
+f <- as.formula(paste0(dep, " ~ ", paste0(indep1,collapse = "+")))
+m <- glm(f, data=data, family="binomial")
+
+importance1 <- data.frame(Type1.1=anova(m)$Deviance[-1], Type2.1=Anova(m,type="2",test="LR")$"LR Chisq")
+rownames(importance1) <- indep1
+
+indep2 <- c("NSF_max","NSM_max","NOF_max","ACD","NOM_max","FOUT_max","PAR_max",'NOI',"TLOC")
+f <- as.formula(paste0(dep, " ~ ", paste0(indep2,collapse = "+")))
+m <- glm(f, data=data, family="binomial")
+importance2 <- data.frame(Type1.2=anova(m)$Deviance[-1], Type2.2=Anova(m,type="2",test="LR")$"LR Chisq")
+rownames(importance2) <- indep2
+
+importance <- data.frame(importance1[indep1,],importance2[indep1,])
+importance <- data.frame(apply(importance, 2, function(x){x/sum(abs(x))}))
+
+round(importance[order(-importance$Type2.1),], digit=2)*100
+```
+
+# Pitfall 8--Interpreting a model using the coeffcients of the variables (Table 6)
+
+```{r, message=F, warning=F}
+
+indep <- c("NSF_max",'NOI',"NSM_max","NOF_max","ACD","NOM_max","FOUT_max","PAR_max","TLOC")
+f <- as.formula(paste0(dep, " ~ ", paste0(indep,collapse = "+")))
+m <- glm(f, data=data, family="binomial")
+importance <- data.frame(coef.m1=coefficients(m)[-1]/sum(abs(coefficients(m)[-1])),
+                     anova.m1=Anova(m,type="2")$"LR Chisq")
+
+center.data <- scale(data[,indep])
+center.data <- data.frame(center.data, post=data[,dep])
+m <- glm(f, data=center.data, family="binomial")
+importance <- cbind(importance, coef.m2=coefficients(m)[-1], anova.m2=Anova(m,type="2")$"LR Chisq")
+
+importance$coef.m1 <- importance$coef.m1/sum(abs(importance$coef.m1))
+importance$anova.m1 <- importance$anova.m1/sum(abs(importance$anova.m1))
+importance$coef.m2 <- importance$coef.m2/sum(abs(importance$coef.m2))
+importance$anova.m2 <- importance$anova.m2/sum(abs(importance$anova.m2))
+
+round(importance[order(-importance$anova.m1),], digit=2)*100
+```
